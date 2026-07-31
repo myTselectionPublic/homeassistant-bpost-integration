@@ -22,6 +22,7 @@ except ImportError:
 
 LOGIN_URL = "https://www.bpost.be/nl/saml_login?destination=%2Fnl%2Fmijn-bpost"
 MIJN_BPOST_URL = "https://www.bpost.be/nl/mijn-bpost?check_logged_in=1"
+PARCELS_HISTORY_URL = "https://www.bpost.be/nl/parcels-history"
 TRACKING_URL = "https://track.bpost.be/btr/web/#/search?lang=nl&itemCode={tracking_id}"
 TRACKING_API_URL = "https://track.bpost.cloud/track/items?itemIdentifier={tracking_id}"
 LOGIN_HOST = "login.bpost.be"
@@ -101,13 +102,29 @@ class _FormParser(HTMLParser):
         self.forms: list[dict[str, Any]] = []
         self.scripts: list[str] = []
         self.links: list[str] = []
+        self.link_sections: list[str | None] = []
+        self.link_statuses: list[str | None] = []
         self._current_form: dict[str, Any] | None = None
         self._in_script = False
         self._script_chunks: list[str] = []
+        self._div_depth = 0
+        self._parcel_section: str | None = None
+        self._parcel_section_depth: int | None = None
+        self._parcel_card_depth: int | None = None
+        self._parcel_card_status: str | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attrs_dict = {key: value or "" for key, value in attrs}
-        if tag == "form":
+        if tag == "div":
+            self._div_depth += 1
+            if attrs_dict.get("id") in ("receiver", "sender"):
+                self._parcel_section = attrs_dict["id"]
+                self._parcel_section_depth = self._div_depth
+            classes = set(attrs_dict.get("class", "").split())
+            if self._parcel_section == "receiver" and {"border", "rounded"} <= classes:
+                self._parcel_card_depth = self._div_depth
+                self._parcel_card_status = None
+        elif tag == "form":
             self._current_form = {
                 "action": attrs_dict.get("action", ""),
                 "method": attrs_dict.get("method", "get").lower(),
@@ -120,13 +137,27 @@ class _FormParser(HTMLParser):
         elif tag == "script":
             self._in_script = True
             self._script_chunks = []
+        elif tag == "img" and self._parcel_card_depth is not None:
+            source = attrs_dict.get("src", "")
+            if "/parcels-history/" in source:
+                self._parcel_card_status = source.rsplit("/", maxsplit=1)[-1].split(".", maxsplit=1)[0]
         elif tag == "a":
             href = attrs_dict.get("href")
             if href:
                 self.links.append(href)
+                self.link_sections.append(self._parcel_section)
+                self.link_statuses.append(self._parcel_card_status)
 
     def handle_endtag(self, tag: str) -> None:
-        if tag == "form" and self._current_form is not None:
+        if tag == "div":
+            if self._parcel_card_depth == self._div_depth:
+                self._parcel_card_depth = None
+                self._parcel_card_status = None
+            if self._parcel_section_depth == self._div_depth:
+                self._parcel_section = None
+                self._parcel_section_depth = None
+            self._div_depth = max(0, self._div_depth - 1)
+        elif tag == "form" and self._current_form is not None:
             self.forms.append(self._current_form)
             self._current_form = None
         elif tag == "script" and self._in_script:
@@ -189,9 +220,10 @@ class BpostWebApi:
     async def async_fetch_parcels(self) -> list[Parcel]:
         """Fetch parcels from Mijn bpost."""
         html = await self._async_fetch_mijn_bpost_html()
+        parcels_history_html = await self._async_fetch_parcels_history_html()
 
         profile_postal_code = parse_profile_postal_code(html)
-        parcels = parse_parcels(html)
+        parcels = parse_parcels(parcels_history_html, received_only=True)
         for parcel in parcels:
             parcel.postal_code = parcel.postal_code or profile_postal_code
         return await self._async_enrich_parcels(parcels)
@@ -216,6 +248,20 @@ class BpostWebApi:
 
         return html
 
+    async def _async_fetch_parcels_history_html(self) -> str:
+        """Fetch and decode the authenticated parcel-history HTML fragment."""
+        html, url = await self._async_get_text(PARCELS_HISTORY_URL)
+        if _is_login_page(html, url):
+            self._logged_in = False
+            await self.async_login()
+            html, url = await self._async_get_text(PARCELS_HISTORY_URL)
+
+        if _is_login_page(html, url):
+            self._logged_in = False
+            raise BpostAuthenticationError("bpost session expired")
+
+        return _decode_html_fragment(html)
+
     async def _async_enrich_parcels(self, parcels: list[Parcel]) -> list[Parcel]:
         """Fetch public tracking details for every parcel where possible."""
         enriched: list[Parcel] = []
@@ -226,6 +272,7 @@ class BpostWebApi:
                 details = await self._async_fetch_tracking_details(parcel.tracking_id, parcel.postal_code)
             except BpostConnectionError:
                 _LOGGER.debug("Could not fetch bpost tracking details for %s", parcel.tracking_id, exc_info=True)
+                enriched.append(parcel)
                 continue
 
             if details:
@@ -237,7 +284,7 @@ class BpostWebApi:
                 )
                 continue
             enriched.append(parcel)
-        return enriched
+        return [parcel for parcel in enriched if not parcel.delivered]
 
     async def _async_fetch_tracking_details(
         self,
@@ -311,7 +358,7 @@ class BpostWebApi:
         return response.text, str(response.url)
 
 
-def parse_parcels(html: str) -> list[Parcel]:
+def parse_parcels(html: str, received_only: bool = False) -> list[Parcel]:
     """Parse parcel-like entries from a Mijn bpost HTML response."""
     parser = _parse_html(html)
     parcels_by_id: dict[str, Parcel] = {}
@@ -323,12 +370,13 @@ def parse_parcels(html: str) -> list[Parcel]:
                 if parcel is not None:
                     parcels_by_id[parcel.tracking_id] = parcel
 
-    for tracking_id, postal_code in _tracking_links_from_html(parser):
+    for tracking_id, postal_code, status in _tracking_links_from_html(parser, received_only):
         parcels_by_id.setdefault(
             tracking_id,
             Parcel(
                 tracking_id=tracking_id,
                 name=tracking_id,
+                status=status,
                 postal_code=postal_code,
                 tracking_url=_tracking_url(tracking_id, postal_code),
                 source="tracking_link",
@@ -342,6 +390,23 @@ def parse_parcels(html: str) -> list[Parcel]:
         len(parser.scripts),
     )
     return [parcel for parcel in parcels_by_id.values() if not parcel.delivered]
+
+
+def _decode_html_fragment(response_text: str) -> str:
+    """Decode a JSON-encoded HTML fragment, falling back to plain HTML."""
+    text = response_text.strip()
+    try:
+        decoded = json.loads(text)
+    except json.JSONDecodeError:
+        if not (text.startswith('"') and text.endswith('"')):
+            return response_text
+        try:
+            decoded = json.loads(
+                text.replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t")
+            )
+        except json.JSONDecodeError:
+            return response_text
+    return decoded if isinstance(decoded, str) else response_text
 
 
 def parse_profile_postal_code(html: str) -> str | None:
@@ -613,9 +678,19 @@ def _postal_code_from_url(url: str | None) -> str | None:
     return None
 
 
-def _tracking_links_from_html(parser: _FormParser) -> list[tuple[str, str | None]]:
-    tracking_links: list[tuple[str, str | None]] = []
-    for href in parser.links:
+def _tracking_links_from_html(
+    parser: _FormParser,
+    received_only: bool = False,
+) -> list[tuple[str, str | None, str | None]]:
+    tracking_links: list[tuple[str, str | None, str | None]] = []
+    for href, section, status in zip(
+        parser.links,
+        parser.link_sections,
+        parser.link_statuses,
+        strict=True,
+    ):
+        if received_only and section != "receiver":
+            continue
         if "itemCode" not in href and "itemCodes" not in href:
             continue
 
@@ -637,7 +712,7 @@ def _tracking_links_from_html(parser: _FormParser) -> list[tuple[str, str | None
             tracking_ids.extend(_tracking_ids_from_query_values(params.get("itemCodes", [])))
 
         for tracking_id in tracking_ids:
-            tracking_links.append((tracking_id, postal_code))
+            tracking_links.append((tracking_id, postal_code, status))
     return tracking_links
 
 
