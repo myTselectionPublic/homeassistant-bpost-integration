@@ -79,7 +79,8 @@ content: >
 
   {% set events = parcel.get('tracking_summary', {}).get('events', []) %}
   {% if events %}
-  Latest update: {{ events[-1].get('event_description') or events[-1].get('status') or events[-1] }}
+  {% set latest = events[-1] %}
+  Latest update:{% if latest.get('date') %} {{ latest.get('date') }}{% if latest.get('time') %} {{ latest.get('time') }}{% endif %}{% elif latest.get('timestamp') %} {{ latest.get('timestamp') }}{% endif %} — {{ latest.get('event_description') or latest.get('status') or latest }}
   {% endif %}
   {% endfor %}
   {% endif %}
@@ -121,7 +122,8 @@ card:
 
     {% set events = parcel.get('tracking_summary', {}).get('events', []) %}
     {% if events %}
-    Latest update: {{ events[-1].get('event_description') or events[-1].get('status') or events[-1] }}
+    {% set latest = events[-1] %}
+    Latest update:{% if latest.get('date') %} {{ latest.get('date') }}{% if latest.get('time') %} {{ latest.get('time') }}{% endif %}{% elif latest.get('timestamp') %} {{ latest.get('timestamp') }}{% endif %} — {{ latest.get('event_description') or latest.get('status') or latest }}
     {% endif %}
     {% endfor %}
 ```

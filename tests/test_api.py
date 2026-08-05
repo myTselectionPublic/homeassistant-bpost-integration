@@ -23,6 +23,11 @@ class _FailingTrackingApi(API.BpostWebApi):
         raise API.BpostConnectionError("tracking service unavailable")
 
 
+class _MissingTrackingApi(API.BpostWebApi):
+    async def _async_fetch_tracking_details(self, tracking_id, postal_code=None):
+        return None
+
+
 class _ParcelHistoryResponseApi(API.BpostWebApi):
     async def _async_get_text(self, url):
         self.requested_url = url
@@ -60,7 +65,9 @@ class ParcelHistoryTest(unittest.TestCase):
             </div>
             <div id="receiver">
               <div class="row border rounded">
+                <div class="col-10 small">3232123411 | From Example shop</div>
                 <img src="/sites/default/files/parcels-history/out_for_delivery_byCar.svg">
+                <div class="small">2026-07-31 | 09:18</div>
                 <a href="https://track.bpost.be/btr/web/#/search?itemCode=3232123411&amp;postalCode=1000">
                   Incoming parcel
                 </a>
@@ -79,8 +86,29 @@ class ParcelHistoryTest(unittest.TestCase):
         parcels = API.parse_parcels(API._decode_html_fragment(response), received_only=True)
 
         self.assertEqual([parcel.tracking_id for parcel in parcels], ["3232123411"])
+        self.assertEqual(parcels[0].name, "Example shop")
+        self.assertEqual(parcels[0].sender, "Example shop")
         self.assertEqual(parcels[0].postal_code, "1000")
         self.assertEqual(parcels[0].status, "out_for_delivery_byCar")
+        self.assertEqual(parcels[0].source, "parcel_history")
+        self.assertEqual(
+            parcels[0].tracking_summary,
+            {
+                "events": [
+                    {
+                        "date": "2026-07-31",
+                        "time": "09:18",
+                        "status": "out_for_delivery_byCar",
+                    }
+                ]
+            },
+        )
+
+        client = _MissingTrackingApi.__new__(_MissingTrackingApi)
+        client._postal_code = None
+        enriched = asyncio.run(client._async_enrich_parcels(parcels))
+
+        self.assertEqual(enriched, parcels)
 
 
 if __name__ == "__main__":

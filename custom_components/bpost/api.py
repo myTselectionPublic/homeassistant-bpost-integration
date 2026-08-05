@@ -94,6 +94,17 @@ class Parcel:
         return attributes
 
 
+@dataclass(slots=True)
+class _TrackingLink:
+    """Parcel metadata extracted from a tracking link and its surrounding card."""
+
+    tracking_id: str
+    postal_code: str | None
+    status: str | None
+    sender: str | None
+    event: dict[str, Any] | None
+
+
 class _FormParser(HTMLParser):
     """Extract forms and script contents from a page."""
 
@@ -104,6 +115,8 @@ class _FormParser(HTMLParser):
         self.links: list[str] = []
         self.link_sections: list[str | None] = []
         self.link_statuses: list[str | None] = []
+        self.link_senders: list[str | None] = []
+        self.link_events: list[dict[str, Any] | None] = []
         self._current_form: dict[str, Any] | None = None
         self._in_script = False
         self._script_chunks: list[str] = []
@@ -112,6 +125,7 @@ class _FormParser(HTMLParser):
         self._parcel_section_depth: int | None = None
         self._parcel_card_depth: int | None = None
         self._parcel_card_status: str | None = None
+        self._parcel_card_text: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attrs_dict = {key: value or "" for key, value in attrs}
@@ -124,6 +138,7 @@ class _FormParser(HTMLParser):
             if self._parcel_section == "receiver" and {"border", "rounded"} <= classes:
                 self._parcel_card_depth = self._div_depth
                 self._parcel_card_status = None
+                self._parcel_card_text = []
         elif tag == "form":
             self._current_form = {
                 "action": attrs_dict.get("action", ""),
@@ -147,12 +162,17 @@ class _FormParser(HTMLParser):
                 self.links.append(href)
                 self.link_sections.append(self._parcel_section)
                 self.link_statuses.append(self._parcel_card_status)
+                self.link_senders.append(_sender_from_parcel_card(self._parcel_card_text))
+                self.link_events.append(
+                    _event_from_parcel_card(self._parcel_card_text, self._parcel_card_status)
+                )
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "div":
             if self._parcel_card_depth == self._div_depth:
                 self._parcel_card_depth = None
                 self._parcel_card_status = None
+                self._parcel_card_text = []
             if self._parcel_section_depth == self._div_depth:
                 self._parcel_section = None
                 self._parcel_section_depth = None
@@ -167,6 +187,10 @@ class _FormParser(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self._in_script:
             self._script_chunks.append(data)
+        elif self._parcel_card_depth is not None:
+            text = " ".join(data.split())
+            if text:
+                self._parcel_card_text.append(text)
 
 
 class BpostWebApi:
@@ -370,16 +394,18 @@ def parse_parcels(html: str, received_only: bool = False) -> list[Parcel]:
                 if parcel is not None:
                     parcels_by_id[parcel.tracking_id] = parcel
 
-    for tracking_id, postal_code, status in _tracking_links_from_html(parser, received_only):
+    for link in _tracking_links_from_html(parser, received_only):
         parcels_by_id.setdefault(
-            tracking_id,
+            link.tracking_id,
             Parcel(
-                tracking_id=tracking_id,
-                name=tracking_id,
-                status=status,
-                postal_code=postal_code,
-                tracking_url=_tracking_url(tracking_id, postal_code),
-                source="tracking_link",
+                tracking_id=link.tracking_id,
+                name=link.sender or link.tracking_id,
+                status=link.status,
+                sender=link.sender,
+                postal_code=link.postal_code,
+                tracking_url=_tracking_url(link.tracking_id, link.postal_code),
+                tracking_summary={"events": [link.event]} if link.event else None,
+                source="parcel_history" if received_only else "tracking_link",
             ),
         )
 
@@ -681,12 +707,14 @@ def _postal_code_from_url(url: str | None) -> str | None:
 def _tracking_links_from_html(
     parser: _FormParser,
     received_only: bool = False,
-) -> list[tuple[str, str | None, str | None]]:
-    tracking_links: list[tuple[str, str | None, str | None]] = []
-    for href, section, status in zip(
+) -> list[_TrackingLink]:
+    tracking_links: list[_TrackingLink] = []
+    for href, section, status, sender, event in zip(
         parser.links,
         parser.link_sections,
         parser.link_statuses,
+        parser.link_senders,
+        parser.link_events,
         strict=True,
     ):
         if received_only and section != "receiver":
@@ -712,8 +740,56 @@ def _tracking_links_from_html(
             tracking_ids.extend(_tracking_ids_from_query_values(params.get("itemCodes", [])))
 
         for tracking_id in tracking_ids:
-            tracking_links.append((tracking_id, postal_code, status))
+            tracking_links.append(
+                _TrackingLink(
+                    tracking_id=tracking_id,
+                    postal_code=postal_code,
+                    status=status,
+                    sender=sender,
+                    event=event,
+                )
+            )
     return tracking_links
+
+
+def _sender_from_parcel_card(texts: list[str]) -> str | None:
+    """Extract the sender label displayed next to a parcel tracking ID."""
+    for text in texts:
+        match = re.fullmatch(
+            r"(?:[A-Z]{2}\d{9}[A-Z]{2}|\d{10,30})\s*\|\s*(?P<sender>.+)",
+            text,
+        )
+        if match is None:
+            continue
+        sender = re.sub(
+            r"^(?:from|van|de|von)\s+",
+            "",
+            match.group("sender").strip(),
+            flags=re.IGNORECASE,
+        )
+        return sender or None
+    return None
+
+
+def _event_from_parcel_card(
+    texts: list[str],
+    status: str | None,
+) -> dict[str, Any] | None:
+    """Extract the latest event displayed on a parcel-history card."""
+    event: dict[str, Any] = {}
+    for text in texts:
+        match = re.fullmatch(
+            r"(?P<date>\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{4})"
+            r"\s*\|\s*(?P<time>\d{1,2}:\d{2})",
+            text,
+        )
+        if match is not None:
+            event["date"] = match.group("date")
+            event["time"] = match.group("time")
+            break
+    if status:
+        event["status"] = status
+    return event or None
 
 
 def _first_query_value(params: Mapping[str, list[str]], key: str) -> str | None:
