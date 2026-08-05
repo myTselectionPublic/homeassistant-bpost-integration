@@ -111,5 +111,38 @@ class ParcelHistoryTest(unittest.TestCase):
         self.assertEqual(enriched, parcels)
 
 
+class TrackingSummaryTest(unittest.TestCase):
+    def test_expected_delivery_time_range_is_normalized(self) -> None:
+        summary = API._summarize_tracking_details(
+            {
+                "expectedDeliveryTimeRange": {
+                    "date": "2026-08-05",
+                    "startTime": "08:00",
+                    "endTime": "12:00",
+                    "metadata": {"timeZone": "Europe/Brussels"},
+                    "unused": None,
+                }
+            }
+        )
+
+        self.assertEqual(
+            summary["expected_delivery_time_range"],
+            {
+                "date": "2026-08-05",
+                "start_time": "08:00",
+                "end_time": "12:00",
+                "metadata": {"time_zone": "Europe/Brussels"},
+            },
+        )
+
+        scalar_summary = API._summarize_tracking_details(
+            {"expectedDeliveryTimeRange": "2026-08-05 08:00-12:00"}
+        )
+        self.assertEqual(
+            scalar_summary["expected_delivery_time_range"],
+            "2026-08-05 08:00-12:00",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

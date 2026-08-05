@@ -895,10 +895,11 @@ def _summarize_tracking_details(details: Mapping[str, Any]) -> dict[str, Any]:
         ("shipmentType", "shipment_type"),
         ("productCategory", "product_category"),
         ("deliveryPreferenceType", "delivery_preference_type"),
+        ("expectedDeliveryTimeRange", "expected_delivery_time_range"),
     ):
         value = details.get(source)
         if value is not None:
-            summary[target] = value
+            summary[target] = _normalize_summary_value(value)
 
     events = details.get("events")
     if isinstance(events, list):
@@ -940,6 +941,19 @@ def _compact_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
             continue
         compact[_camel_to_snake(str(key))] = child
     return compact
+
+
+def _normalize_summary_value(value: Any) -> Any:
+    """Normalize a nested tracking-summary value for Home Assistant attributes."""
+    if isinstance(value, Mapping):
+        return {
+            _camel_to_snake(str(key)): _normalize_summary_value(child)
+            for key, child in value.items()
+            if child is not None
+        }
+    if isinstance(value, list):
+        return [_normalize_summary_value(child) for child in value if child is not None]
+    return value
 
 
 def _camel_to_snake(value: str) -> str:

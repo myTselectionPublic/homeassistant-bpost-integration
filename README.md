@@ -67,7 +67,19 @@ content: >
 
   Status: {{ parcel.get('status', 'Expected') }}
 
-  {% if parcel.get('expected_delivery') %}
+  {% set delivery = parcel.get('tracking_summary', {}).get('expected_delivery_time_range') %}
+  {% if delivery is mapping %}
+  {% set delivery_date = delivery.get('day') or delivery.get('date') or delivery.get('delivery_date') %}
+  {% set delivery_start = delivery.get('start_time') or delivery.get('from') or delivery.get('start') %}
+  {% set delivery_end = delivery.get('end_time') or delivery.get('to') or delivery.get('end') %}
+  {% if delivery_date or delivery_start or delivery_end %}
+  Delivery:{% if delivery_date %} {{ delivery_date }}{% endif %}{% if delivery_start %} {{ delivery_start }}{% endif %}{% if delivery_end %} to {{ delivery_end }}{% endif %}
+  {% else %}
+  Delivery: {{ delivery }}
+  {% endif %}
+  {% elif delivery %}
+  Delivery: {{ delivery }}
+  {% elif parcel.get('expected_delivery') %}
   Delivery: {{ parcel.get('expected_delivery') }}
   {% endif %}
 
@@ -110,7 +122,19 @@ card:
 
     Status: {{ parcel.get('status', 'Expected') }}
 
-    {% if parcel.get('expected_delivery') %}
+    {% set delivery = parcel.get('tracking_summary', {}).get('expected_delivery_time_range') %}
+    {% if delivery is mapping %}
+    {% set delivery_date = delivery.get('day') or delivery.get('date') or delivery.get('delivery_date') %}
+    {% set delivery_start = delivery.get('start_time') or delivery.get('from') or delivery.get('start') %}
+    {% set delivery_end = delivery.get('end_time') or delivery.get('to') or delivery.get('end') %}
+    {% if delivery_date or delivery_start or delivery_end %}
+    Delivery:{% if delivery_date %} {{ delivery_date }}{% endif %}{% if delivery_start %} {{ delivery_start }}{% endif %}{% if delivery_end %} to {{ delivery_end }}{% endif %}
+    {% else %}
+    Delivery: {{ delivery }}
+    {% endif %}
+    {% elif delivery %}
+    Delivery: {{ delivery }}
+    {% elif parcel.get('expected_delivery') %}
     Delivery: {{ parcel.get('expected_delivery') }}
     {% endif %}
 
