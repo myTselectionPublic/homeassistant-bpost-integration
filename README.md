@@ -29,7 +29,7 @@ Only features with a checked box are available at the moment. Other features are
 
 ### Services
 
-* [ ] Start tracking a new parcel
+* [x] Start tracking a new parcel
 
 ## Installation
 
