@@ -415,6 +415,18 @@ def parse_parcels(html: str, received_only: bool = False) -> list[Parcel]:
         len(parser.links),
         len(parser.scripts),
     )
+    if _LOGGER.isEnabledFor(logging.DEBUG):
+        for parcel in parcels_by_id.values():
+            _LOGGER.debug(
+                "Parsed bpost parcel details: %r; attributes: %s",
+                parcel,
+                json.dumps(parcel.attributes, ensure_ascii=False, default=str),
+            )
+            _LOGGER.debug(
+                "Full bpost tracking details for %s: %s",
+                parcel.tracking_id,
+                json.dumps(parcel.tracking_details, ensure_ascii=False, default=str),
+            )
     return [parcel for parcel in parcels_by_id.values() if not parcel.delivered]
 
 

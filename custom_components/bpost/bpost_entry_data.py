@@ -1,3 +1,4 @@
+import logging
 from datetime import timedelta
 from logging import Logger
 from typing import Any
@@ -18,6 +19,9 @@ from .const import (
     SENSOR_PARCELS_DUE,
 )
 
+_LOGGER = logging.getLogger(__name__)
+
+
 async def async_update_sensors(bpost_api: BpostWebApi):
     """Fetch parcel data and shape it for Home Assistant entities."""
     parcels = await bpost_api.async_fetch_parcels()
@@ -30,6 +34,7 @@ async def async_update_sensors(bpost_api: BpostWebApi):
         }
     }
     for parcel in parcels:
+        _LOGGER.debug("Sensor data attributes: %s", parcel.attributes)
         sensor_data[f"parcel_{_slugify(parcel.tracking_id)}"] = {
             "data": parcel.status or "expected",
             "name": parcel.name,

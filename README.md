@@ -47,57 +47,6 @@ This repository is included in the [HACS](https://hacs.xyz) repositories.
 
 ## Dashboard examples
 
-### Markdown card
-
-```yaml
-type: markdown
-title: bpost parcels
-content: >
-  {% set parcels = state_attr('sensor.parcels_due', 'parcels') or [] %}
-
-  {% if parcels | count == 0 %}
-  No parcels expected.
-  {% else %}
-  **{{ states('sensor.parcels_due') }} parcel{{ 's' if parcels | count != 1 else '' }} expected**
-
-  {% for parcel in parcels %}
-  ---
-
-  **{{ parcel.get('sender') or parcel.get('tracking_id', 'Parcel') }}**
-
-  Status: {{ parcel.get('status', 'Expected') }}
-
-  {% set delivery = parcel.get('tracking_summary', {}).get('expected_delivery_time_range') %}
-  {% if delivery is mapping %}
-  {% set delivery_date = delivery.get('day') or delivery.get('date') or delivery.get('delivery_date') %}
-  {% set delivery_start = delivery.get('start_time') or delivery.get('from') or delivery.get('start') %}
-  {% set delivery_end = delivery.get('end_time') or delivery.get('to') or delivery.get('end') %}
-  {% if delivery_date or delivery_start or delivery_end %}
-  Delivery:{% if delivery_date %} {{ delivery_date }}{% endif %}{% if delivery_start %} {{ delivery_start }}{% endif %}{% if delivery_end %} to {{ delivery_end }}{% endif %}
-  {% else %}
-  Delivery: {{ delivery }}
-  {% endif %}
-  {% elif delivery %}
-  Delivery: {{ delivery }}
-  {% elif parcel.get('expected_delivery') %}
-  Delivery: {{ parcel.get('expected_delivery') }}
-  {% endif %}
-
-  {% if parcel.get('postal_code') %}
-  Postal code: {{ parcel.get('postal_code') }}
-  {% endif %}
-
-  Tracking: [{{ parcel.get('tracking_id', 'Unknown') }}]({{ parcel.get('tracking_url') }})
-
-  {% set events = parcel.get('tracking_summary', {}).get('events', []) %}
-  {% if events %}
-  {% set latest = events[-1] %}
-  Latest update:{% if latest.get('date') %} {{ latest.get('date') }}{% if latest.get('time') %} {{ latest.get('time') }}{% endif %}{% elif latest.get('timestamp') %} {{ latest.get('timestamp') }}{% endif %} — {{ latest.get('event_description') or latest.get('status') or latest }}
-  {% endif %}
-  {% endfor %}
-  {% endif %}
-```
-
 ### Conditional card
 
 Only show parcel details when at least one parcel is expected:
@@ -111,45 +60,107 @@ card:
   type: markdown
   title: bpost parcels
   content: >
-    {% set parcels = state_attr('sensor.parcels_due', 'parcels') or [] %}
+    {% macro format_date(value) -%} {{ as_datetime(value).strftime('%a
+    %d/%m/%Y') if value and as_datetime(value) else value }} {%- endmacro %}  {%
+    set parcels = state_attr('sensor.parcels_due', 'parcels') or [] %} {% if
+    parcels | count == 0 %} Geen pakjes verwacht {% else %} **{{
+    states('sensor.parcels_due') }} bpost pakje{% if parcels | count > 1 %}s{%
+    endif %} verwacht**
 
-    **{{ parcels | count }} parcel{{ 's' if parcels | count != 1 else '' }} expected**
+    {% for parcel in parcels %} ---
 
-    {% for parcel in parcels %}
-    ---
+    {% set details = parcel.get('tracking_details') or {} %} {% set summary =
+    parcel.get('tracking_summary') or {} %} {% set language =
+    (details.get('requestedPreferences') or {}).get('language', 'NL') | upper %}
+    {% set language_lower = language | lower %} {% set active_step =
+    details.get('activeStep') or {} %} {% set pickup_point =
+    details.get('deliveryPoint') or {} %} {% set locker =
+    details.get('lockerDetailsDropOff') or {} %} {% set pickup_ready =
+    active_step.get('status') == 'active' and 'AVAILABLE' in
+    active_step.get('knownProcessStep', '') %}
+      
+    <details><summary><b>{{ details.get('senderCommercialName') or parcel.get('sender') or parcel.get('tracking_id','Parcel') }}</b>, Status: {{ details.get('activeStep',
+    {}).get('label',{}).get('main',{}).get(language,'') }} {{
+    details.get('activeStep',
+    {}).get('label',{}).get('detail',{}).get(language,'') }}{% if
+    parcel.get('expected_delivery') %} , Levering: {{
+    parcel.get('expected_delivery') }} {% endif %}, <a href='{{
+    parcel.get('tracking_url') }}'>{{ parcel.get('tracking_id', 'Unknown')
+    }}</a></summary> {% set events = details.get('events') or
+    summary.get('events') or [] %} 
 
-    **{{ parcel.get('sender') or parcel.get('tracking_id', 'Parcel') }}**
+    {% if events %} {% set latest = events[0] %} {% set event_text =
+    (latest.get('key') or {}).get(language, {}) %}
+      **Laatste update:**{% if
+    latest.get('date') %} {{ format_date(latest.get('date')) }}{% if
+    latest.get('time') %} at {{ latest.get('time') }}{% endif %}{% elif
+    latest.get('timestamp') %} {{
+    as_datetime(latest.get('timestamp')).strftime('%d/%m/%Y %H:%M') if
+    as_datetime(latest.get('timestamp')) else latest.get('timestamp') }}{% endif
+    %}{% if latest.get('location', {}).get('locationName') %}, {{
+    latest.get('location', {}).get('locationName') }}{% endif %} — {{
+    event_text.get('description') or latest.get('event_description') or
+    latest.get('status') or 'Status updated' }} {% endif %}
 
-    Status: {{ parcel.get('status', 'Expected') }}
+    {% if pickup_point %} {% set point_type = pickup_point.get('type') or '' %}
+    {% set point_name = pickup_point.get('name') or {} %} {% set point_street =
+    pickup_point.get('street') or {} %} {% set point_number =
+    pickup_point.get('streetNumber') or {} %} {% set point_postcode =
+    pickup_point.get('postcode') or {} %} 
+      {% set point_city =
+    pickup_point.get('municipality') or {} %} **Afhaal punt:** {% if
+    pickup_point.get('latitude') and pickup_point.get('longitude') %}
+    [{{point_type}}](https://www.google.com/maps/search/?api=1&query={{
+    pickup_point.get('latitude') }},{{ pickup_point.get('longitude')
+    }}){%else%}{{point_type}}{% endif %} {{
+      point_name.get(language_lower) or point_name.get(language) or point_name }}
+    {{ point_street.get(language_lower) or point_street.get(language_lower) or
+    point_street }} {{ point_number.get(language_lower) or
+    point_number.get('en') or point_number }}, {{ point_postcode.get(language |
+    lower) or point_postcode.get(language_lower) or point_postcode }} {{
+    point_city.get(language_lower) or point_city.get(language_lower) or
+    point_city }}
 
-    {% set delivery = parcel.get('tracking_summary', {}).get('expected_delivery_time_range') %}
-    {% if delivery is mapping %}
-    {% set delivery_date = delivery.get('day') or delivery.get('date') or delivery.get('delivery_date') %}
-    {% set delivery_start = delivery.get('start_time') or delivery.get('from') or delivery.get('start') %}
-    {% set delivery_end = delivery.get('end_time') or delivery.get('to') or delivery.get('end') %}
-    {% if delivery_date or delivery_start or delivery_end %}
-    Delivery:{% if delivery_date %} {{ delivery_date }}{% endif %}{% if delivery_start %} {{ delivery_start }}{% endif %}{% if delivery_end %} to {{ delivery_end }}{% endif %}
-    {% else %}
-    Delivery: {{ delivery }}
-    {% endif %}
-    {% elif delivery %}
-    Delivery: {{ delivery }}
-    {% elif parcel.get('expected_delivery') %}
-    Delivery: {{ parcel.get('expected_delivery') }}
-    {% endif %}
 
-    {% if parcel.get('postal_code') %}
-    Postal code: {{ parcel.get('postal_code') }}
-    {% endif %}
+    {% set available_from = details.get('earliestAvailableTime') or {} %} {% set
+    available_until = details.get('latestAvailableTime') or {} %} {% if
+    available_from.get('day') or available_until.get('day') %} **Ophalen**:{% if
+    available_from.get('day') %} van {{ format_date(available_from.get('day'))
+    }}{% if available_from.get('time') %} {{ available_from.get('time') }}{%
+    endif %}{% endif %}{% if available_until.get('day') %} tot **{{
+    format_date(available_until.get('day')) }}{% if available_until.get('time')
+    %} {{ available_until.get('time') }}{% endif %}**{% endif %} {% endif %}
 
-    Tracking: [{{ parcel.get('tracking_id', 'Unknown') }}]({{ parcel.get('tracking_url') }})
+    {% set opening_schedules = pickup_point.get('openingSchedules') or [] %} {%
+    if pickup_ready and opening_schedules %} {% set day_names = {'MONDAY':
+    'Maandag', 'TUESDAY': 'Dinsdag', 'WEDNESDAY': 'Woensdag', 'THURSDAY':
+    'Donderdag', 'FRIDAY': 'Vrijdag', 'SATURDAY': 'Zaterdag', 'SUNDAY':
+    'Zondag'} %} >**Openingsuren:**<br> {% for schedule in opening_schedules %}
+    {{ day_names.get(schedule.get('dayOfTheWeek'), schedule.get('dayOfTheWeek',
+    '') | title) }}: {% set hours = schedule.get('openingHours') or [] %}{% if
+    hours %}{% for period in hours %}{{ period.get('open') }}–{{
+    period.get('close') }}{% if not loop.last %}, {% endif %}{% endfor %}{% else
+    %}Gesloten{% endif %}<br> {% endfor %} {% endif %} {% endif %}
 
-    {% set events = parcel.get('tracking_summary', {}).get('events', []) %}
-    {% if events %}
-    {% set latest = events[-1] %}
-    Latest update:{% if latest.get('date') %} {{ latest.get('date') }}{% if latest.get('time') %} {{ latest.get('time') }}{% endif %}{% elif latest.get('timestamp') %} {{ latest.get('timestamp') }}{% endif %} — {{ latest.get('event_description') or latest.get('status') or latest }}
-    {% endif %}
-    {% endfor %}
+      
+    **Tracking:** [{{ parcel.get('tracking_id', 'Unknown') }}]({{
+    parcel.get('tracking_url') }})
+
+    {% if pickup_ready %} {% set qr_image = locker.get('qrCodeUrl') or
+    locker.get('qr_code_url') or details.get('qrCodeUrl') %} {% set locker_code
+    = locker.get('qrCode') or locker.get('qr_code') or locker.get('openingCode')
+    or details.get('secureDeliveryCode') %} {% if qr_image %} **Scan to open the
+    parcel locker**
+
+    ![Locker QR code]({{ qr_image }}) {% elif locker_code %} **Parcel-locker
+    access code:** `{{ locker_code }}`  {% endif %} {% endif %}
+
+    **Ontvanger:** {{details.get('receiver',{}).get('name','')}}
+
+      
+    **Afmetingen:** {{details.get('dimensionsInCm')}},
+    {{((details.get('weightInGrams')| int(0))/1000) | round(2) }}kg {%endfor %}
+    </details> {% endif %}
 ```
 
 ### Auto-entities card
